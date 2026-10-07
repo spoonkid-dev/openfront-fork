@@ -1,13 +1,11 @@
-import { Product } from "@openfront/shared/CosmeticSchemas";
 import { html, LitElement, nothing } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import type { InsufficientCurrency, PurchaseResult } from "../Cosmetics";
 import { showInGameAlert } from "../InGameModal";
 import { translateText } from "../Utils";
+import type { InlineCheckoutConfig } from "./InlineCheckout";
 import "./CapIcon";
 import "./ConfirmDialog";
-import "./InlineCheckout";
-import type { InlineCheckoutConfig } from "./InlineCheckout";
 import "./InsufficientCurrencyDialog";
 import "./PlutoniumIcon";
 
@@ -212,13 +210,6 @@ if (!document.getElementById(PURCHASE_STYLE_ID)) {
 
 @customElement("purchase-button")
 export class PurchaseButton extends LitElement {
-  @property({ type: Object })
-  product: Product | null = null;
-
-  /** Price shown for a direct dollar checkout without a catalog product. */
-  @property({ type: String })
-  dollarPrice: string = "";
-
   @property({ type: Number })
   priceHard: number | null = null;
 
@@ -228,44 +219,26 @@ export class PurchaseButton extends LitElement {
   @property({ type: String })
   rarity: string = "common";
 
-  /** Optional action-label key shown before the price (e.g. "Switch"). Empty
-   * shows the price on its own. */
-  @property({ type: String })
-  dollarLabelKey: string = "";
-
-  /** Optional suffix appended to the displayed price, e.g. "/mo". Not translated here. */
-  @property({ type: String })
-  priceSuffix: string = "";
-
   /** Display name of the item, used in the currency confirmation dialog. */
   @property({ type: String })
   itemName: string = "";
 
-  /**
-   * Keep an empty line where this payment method's button would go. Set by
-   * grids where sibling cards do offer the method, so the same currency lands
-   * on the same line across the row.
-   */
-  @property({ type: Boolean })
-  reserveDollar = false;
+  // Legacy fields are accepted for compatibility with old cached/custom
+  // currency cards, but no real-money button is rendered.
+  @property({ type: String })
+  dollarPrice: string = "";
+
+  @property({ type: Object })
+  inlineCheckout: InlineCheckoutConfig | null = null;
+
+  @property({ type: Function })
+  onPurchaseDollar?: () => Promise<PurchaseResult>;
 
   @property({ type: Boolean })
   reserveHard = false;
 
   @property({ type: Boolean })
   reserveSoft = false;
-
-  /**
-   * When set, the dollar line checks out inline — wallet button plus in-page
-   * card form — instead of redirecting. `onPurchaseDollar` stays required:
-   * it is the fallback where the inline flow can't run (Steam rail, keyless
-   * build, Stripe.js blocked).
-   */
-  @property({ type: Object })
-  inlineCheckout: InlineCheckoutConfig | null = null;
-
-  @property({ type: Function })
-  onPurchaseDollar?: () => Promise<PurchaseResult>;
 
   @property({ type: Function })
   onPurchaseHard?: () => Promise<PurchaseResult>;
@@ -286,10 +259,6 @@ export class PurchaseButton extends LitElement {
 
   createRenderRoot() {
     return this;
-  }
-
-  get offersDollar(): boolean {
-    return Boolean((this.product ?? this.dollarPrice) && this.onPurchaseDollar);
   }
 
   get offersHard(): boolean {
@@ -337,39 +306,6 @@ export class PurchaseButton extends LitElement {
     this.insufficient = result;
   }
 
-  private renderDollarButton() {
-    const price = this.dollarPrice || this.product?.price;
-    if (!price) return nothing;
-
-    // The inline line renders its own price button (it routes the click to
-    // the card form rather than a redirect), so label/suffix extras don't
-    // apply — nothing that checks out inline uses them.
-    if (this.inlineCheckout) {
-      return html`<inline-checkout
-        class="block w-full"
-        .request=${this.inlineCheckout.request}
-        .amountCents=${this.inlineCheckout.amountCents}
-        .successMessageKey=${this.inlineCheckout.successMessageKey}
-        .priceLabel=${price}
-        .onFallback=${this.onPurchaseDollar}
-      ></inline-checkout>`;
-    }
-
-    return html`
-      <button
-        class="purchase-sparkle-btn relative overflow-hidden w-full min-h-11 px-2 py-1.5 bg-blue-500/20 text-blue-300 border border-blue-500/40 rounded-lg text-base font-bold cursor-pointer transition-all duration-200 flex items-center justify-center
-         hover:bg-blue-600 hover:border-blue-400 hover:text-white hover:shadow-[0_0_20px_rgba(96,165,250,0.6)]"
-        ?disabled=${this.busy}
-        @click=${(e: Event) => this.handleClick(e, this.onPurchaseDollar)}
-      >
-        <span class="purchase-sparkle-streak"></span>
-        ${this.dollarLabelKey
-          ? html`${translateText(this.dollarLabelKey)} `
-          : nothing}${price}${this.priceSuffix}
-      </button>
-    `;
-  }
-
   private renderHardButton() {
     return html`
       <button
@@ -414,18 +350,15 @@ export class PurchaseButton extends LitElement {
   }
 
   render() {
-    const hasDollar = this.offersDollar;
     const hasHard = this.offersHard;
     const hasSoft = this.offersSoft;
 
-    if (!hasDollar && !hasHard && !hasSoft) return nothing;
+    if (!hasHard && !hasSoft) return nothing;
 
     // Reserved lines above the topmost real button push the rising particles
     // down with it, so they never sparkle over an empty line. Each line is
     // min-h-11 (2.75rem) plus the column's gap-1 (0.25rem).
-    const leadingReserved =
-      (!hasDollar && this.reserveDollar ? 1 : 0) +
-      (!hasDollar && !hasHard && this.reserveHard ? 1 : 0);
+    const leadingReserved = !hasHard && this.reserveHard ? 1 : 0;
 
     return html`
       <div
@@ -447,11 +380,6 @@ export class PurchaseButton extends LitElement {
               )}`
           : null}
         <div class="flex flex-col gap-1 w-full">
-          ${hasDollar
-            ? this.renderDollarButton()
-            : this.reserveDollar
-              ? this.renderReservedLine()
-              : null}
           ${hasHard
             ? this.renderHardButton()
             : this.reserveHard
@@ -499,9 +427,8 @@ export class PurchaseButton extends LitElement {
 }
 
 /**
- * Line up payment buttons by currency within each visual row: every card in a
- * row reserves a line for the methods its row-mates offer, and only those — a
- * row with no caps price keeps no caps line. Rows are read from laid-out card
+ * Line up in-game currency buttons within each visual row: every card in a
+ * row reserves a line for the currencies its row-mates offer. Rows are read from laid-out card
  * positions (offsetTop, so a hovered card's scale doesn't move it), so callers
  * must run this after render and on resize.
  */
@@ -519,11 +446,9 @@ export function alignPurchaseRows(root: ParentNode): void {
   }
 
   for (const row of rows.values()) {
-    const dollar = row.some((button) => button.offersDollar);
     const hard = row.some((button) => button.offersHard);
     const soft = row.some((button) => button.offersSoft);
     for (const button of row) {
-      button.reserveDollar = dollar;
       button.reserveHard = hard;
       button.reserveSoft = soft;
     }

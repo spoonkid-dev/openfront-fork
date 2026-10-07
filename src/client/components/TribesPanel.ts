@@ -302,7 +302,7 @@ export class TribesPanel extends LitElement {
       currency: translateText("cosmetics.hard"),
       shortfall: Math.max(1, price - balance),
       item,
-      canTopUp: true,
+      canTopUp: false,
     };
   }
 

@@ -1,56 +1,8 @@
 import { LOBBY_QUEUE_CUTOFF_MS } from "@openfront/shared/WireSchemas";
-import { ServerEnv } from "./ServerEnv";
-
 export type LobbyQueuePaymentResult =
   | { type: "success" }
   | { type: "insufficient_balance" }
   | { type: "error"; message: string };
-
-/**
- * Charges the host for putting their listed lobby in the public queue
- * (infra POST /users/@me/lobby_queue). Sent with the host's token, so the API
- * charges that player, plus our API key so the per-IP limit doesn't pool every
- * host behind this server. The charge is idempotent per (player, gameID), so a
- * retry after a timeout can't double-charge.
- */
-export async function payForLobbyQueue(
-  token: string,
-  gameID: string,
-): Promise<LobbyQueuePaymentResult> {
-  try {
-    const response = await fetch(
-      `${ServerEnv.jwtIssuer()}/users/@me/lobby_queue`,
-      {
-        method: "POST",
-        signal: AbortSignal.timeout(5000),
-        headers: {
-          authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-          "x-api-key": ServerEnv.apiKey(),
-        },
-        body: JSON.stringify({ gameID }),
-      },
-    );
-    if (response.ok) return { type: "success" };
-    if (response.status === 400) {
-      const body = (await response.json().catch(() => null)) as {
-        code?: unknown;
-      } | null;
-      if (
-        body?.code === "insufficient_balance" ||
-        body?.code === "insufficient_balance_debt"
-      ) {
-        return { type: "insufficient_balance" };
-      }
-    }
-    return {
-      type: "error",
-      message: `api returned ${response.status}`,
-    };
-  } catch (e) {
-    return { type: "error", message: `lobby queue payment failed: ${e}` };
-  }
-}
 
 // The slice of GameServer the queue route needs, so the rules are testable
 // without a live game.
@@ -70,9 +22,8 @@ export type QueueLobbyOutcome =
   | { status: 402 | 403 | 409 | 502; body: { error: string } };
 
 /**
- * The host of a listed lobby pays to put it in the public Special queue.
- * Checks run before the charge so a refusal never costs anything; `pay` is
- * skipped when already queued, so a retried click is free.
+ * The host of a listed lobby can put it in the public Special queue for free.
+ * `pay` remains injectable for the queue rule tests and always succeeds.
  */
 export async function queueListedLobby(
   game: QueueableLobby,
@@ -99,17 +50,10 @@ export async function queueListedLobby(
     return { status: 409, body: { error: "queue_lobby_starting" } };
   }
 
-  const payment = await pay();
-  if (payment.type === "insufficient_balance") {
-    return { status: 402, body: { error: "insufficient_balance" } };
-  }
-  if (payment.type === "error") {
-    return { status: 502, body: { error: "queue_payment_failed" } };
-  }
+  await pay();
 
-  // The lobby can fill and start while the charge is in flight; queueing it
-  // then does nothing (only lobbies are reported), and the host still got
-  // the game they paid to fill.
+  // The lobby can fill and start while the no-op charge callback is in flight;
+  // queueing it then does nothing (only lobbies are reported).
   game.queueForPublic();
   return { status: 200, body: { queued: true } };
 }

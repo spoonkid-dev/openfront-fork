@@ -381,6 +381,13 @@ export async function purchaseCosmetic(
   method: PaymentMethod,
 ): Promise<PurchaseResult> {
   if (!resolved.cosmetic) return;
+  // The store no longer sells anything for real money. Keep this guard at the
+  // purchase boundary as well as hiding the old checkout UI, so stale catalog
+  // data or an older client cannot start a Stripe or Steam checkout here.
+  if (method === "dollar" || resolved.type === "subscription") {
+    await showInGameAlert(translateText("store.checkout_failed"));
+    return;
+  }
   const c = resolved.cosmetic;
   const colorPaletteName = resolved.colorPalette?.name;
 
@@ -631,7 +638,7 @@ export async function purchaseCosmetic(
       shortfall: Math.max(1, price - available),
       item: itemName,
       // Only plutonium can be topped up; caps are dismiss-only.
-      canTopUp: method === "hard",
+      canTopUp: false,
     };
   };
   if (balance < price) {
@@ -736,7 +743,7 @@ async function purchasePack(
     currency: translateText("cosmetics.hard"),
     shortfall: pack.priceHard - balance,
     item: pack.displayName,
-    canTopUp: true,
+    canTopUp: false,
   });
   const balance = userMe.player.currency?.hard ?? 0;
   // Same as the single-cosmetic path: a charged-back wallet arrives here as a

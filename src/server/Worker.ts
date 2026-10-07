@@ -36,7 +36,7 @@ import { registerGamePreviewRoute } from "./GamePreviewRoute";
 import { GamePhase, type GameServer } from "./GameServer";
 import { isSteamAuthenticated, planJoinVerify, verifyJoin } from "./JoinVerify";
 import { getUserMe, userMeFailureClose, verifyClientToken } from "./jwt";
-import { payForLobbyQueue, queueListedLobby } from "./LobbyQueuePayment";
+import { queueListedLobby } from "./LobbyQueuePayment";
 import { logger } from "./Logger";
 import { resolveVerifiedJoin } from "./Privilege";
 
@@ -269,8 +269,8 @@ export async function startWorker() {
   });
 
   // Toggle whether a private lobby is visible in the public lobby browser.
-  // Creator-only; listing requires an active subscription (checked fresh
-  // against the API) and is limited to one listed lobby per creator.
+  // Creator-only; public listing is available to every player and is limited
+  // to one listed lobby per creator.
   app.post("/api/game/:id/listing", async (req, res) => {
     const authHeader = req.headers.authorization;
     if (!authHeader?.startsWith("Bearer ")) {
@@ -344,24 +344,6 @@ export async function startWorker() {
         return res.status(409).json({ error: "listing_max_players_too_low" });
       }
 
-      // Dev has no subscription backend; skip the check so the feature is
-      // testable locally (same precedent as Turnstile).
-      if (ServerEnv.env() !== GameEnv.Dev) {
-        const userMe = await getUserMe(token);
-        if (userMe.type === "error") {
-          log.warn(
-            `listing rejected, user me fetch failed: ${userMe.message}`,
-            {
-              gameID: req.params.id,
-            },
-          );
-          return res.status(403).json({ error: "subscription_required" });
-        }
-        if (!userMe.response.player.canCreatePublicLobbies) {
-          return res.status(403).json({ error: "subscription_required" });
-        }
-      }
-
       const creatorID = game.hashedCreatorID();
       if (
         creatorID !== undefined &&
@@ -386,9 +368,8 @@ export async function startWorker() {
     res.json({ listed });
   });
 
-  // The host of a listed lobby pays (plutonium, charged by the API with the
-  // host's token) to put it in the public Special queue, right behind the
-  // lobby that's counting down.
+  // The host of a listed lobby can put it in the public Special queue for
+  // free, right behind the lobby that's counting down.
   app.post("/api/game/:id/queue", async (req, res) => {
     const authHeader = req.headers.authorization;
     if (!authHeader?.startsWith("Bearer ")) {
@@ -416,11 +397,7 @@ export async function startWorker() {
         queueForPublic: () => game.queueForPublic(),
       },
       auth.persistentId,
-      // Dev has no payment backend; skip the charge so the feature is
-      // testable locally (same precedent as the listing subscription check).
-      ServerEnv.env() === GameEnv.Dev
-        ? async () => ({ type: "success" })
-        : () => payForLobbyQueue(token, game.id),
+      async () => ({ type: "success" }),
     );
     if (outcome.status === 502) {
       log.warn("lobby queue payment failed", { gameID: game.id });

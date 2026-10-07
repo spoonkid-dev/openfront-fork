@@ -11,7 +11,6 @@ import {
   TeamCountConfig,
 } from "@openfront/engine-api/Schemas";
 import { DoomsdayClockSpeed } from "@openfront/engine-lib/game/DoomsdayClock";
-import { GameEnv } from "@openfront/shared/configuration/Env";
 import { EventBus } from "@openfront/shared/EventBus";
 import {
   ClientInfo,
@@ -28,22 +27,19 @@ import {
   showToast,
   translateText,
 } from "../client/Utils";
-import { createLobby, getUserMe, queueLobby, setLobbyListed } from "./Api";
+import { createLobby, queueLobby, setLobbyListed } from "./Api";
 import "./components/baseComponents/Modal";
 import { BaseModal } from "./components/BaseModal";
 import "./components/ConfirmDialog";
 import { CopyButton } from "./components/CopyButton";
 import "./components/GameConfigSettings";
 import "./components/InputCard";
-import "./components/InsufficientCurrencyDialog";
 import "./components/ListLobbyDialog";
 import { ListLobbyOptions } from "./components/ListLobbyDialog";
 import "./components/LobbyPlayerView";
-import "./components/PlutoniumIcon";
 import "./components/ToggleInputCard";
 import { inviteFriendsButton } from "./components/ui/InviteFriendsButton";
 import { modalHeader } from "./components/ui/ModalHeader";
-import { fetchCosmetics, InsufficientCurrency } from "./Cosmetics";
 import { crazyGamesSDK } from "./CrazyGamesSDK";
 import { JoinLobbyEvent } from "./Main";
 import { terrainMapFileLoader } from "./TerrainMapFileLoader";
@@ -116,23 +112,13 @@ export class HostLobbyModal extends BaseModal {
   @state() private lobbyCreatorClientID: string = "";
   @state() private lobbyStartAt: number | null = null;
   @state() private serverTimeOffset: number = 0;
-  // Whether this user may actually make the lobby public (the API's
-  // canCreatePublicLobbies entitlement, or anyone in dev). The toggle itself
-  // is always shown.
-  @state() private canListPublicly: boolean = false;
   @state() private publiclyListed: boolean = false;
-  @state() private showSubscriptionRequired: boolean = false;
   @state() private showListLobbyDialog: boolean = false;
   // Server timestamp when the listed lobby auto-starts (from lobby info).
   @state() private autoStartAt: number | null = null;
-  // The host paid to put the listed lobby in the public Special queue.
+  // The host can put the listed lobby in the public Special queue for free.
   @state() private queued: boolean = false;
-  // Queue price from cosmetics.json; the Queue button hides without it.
-  @state() private queuePriceHard: number | null = null;
   @state() private queueRequestInFlight: boolean = false;
-  @state() private showQueueConfirm: boolean = false;
-  @state() private insufficientInfo: InsufficientCurrency | null = null;
-  private hardBalance = 0;
 
   @property({ attribute: false }) eventBus: EventBus | null = null;
   // Timers for debouncing slider changes
@@ -268,9 +254,7 @@ export class HostLobbyModal extends BaseModal {
     });
   }
 
-  // Private/Public segmented toggle in the header. Shown to everyone;
-  // non-subscribers get a subscription-required dialog instead of a listing
-  // request (the server re-checks the subscription regardless). Listing is
+  // Private/Public segmented toggle in the header. Listing is
   // one-way (the server rejects unlisting), so the Private segment goes away
   // once the lobby is listed.
   private renderVisibilityToggle() {
@@ -298,8 +282,7 @@ export class HostLobbyModal extends BaseModal {
     `;
   }
 
-  // Listed lobbies only: pay plutonium to put the lobby in the public
-  // Special queue, right behind the lobby that's counting down.
+  // Listed lobbies only: queue for free behind the lobby that's counting down.
   private renderQueueButton() {
     if (!this.publiclyListed) return nothing;
     if (this.queued) {
@@ -308,11 +291,8 @@ export class HostLobbyModal extends BaseModal {
         >${translateText("host_modal.queued")}</span
       >`;
     }
-    // Gone once the lobby is starting or about to auto-start, so the host
-    // can't pay for a spot it starts before reaching (the server refuses
-    // too).
+    // Gone once the lobby is starting or about to auto-start.
     if (
-      this.queuePriceHard === null ||
       this.lobbyStartAt !== null ||
       (this.autoStartAt !== null &&
         getSecondsUntilServerTimestamp(
@@ -328,31 +308,19 @@ export class HostLobbyModal extends BaseModal {
       class="flex items-center gap-1.5 px-3 py-1 text-[10px] font-bold uppercase tracking-widest rounded-full bg-green-500/15 text-green-400 border border-green-500/30 hover:bg-green-500/25 transition-all shrink-0 disabled:opacity-50"
       title=${translateText("host_modal.queue_tooltip")}
       ?disabled=${this.queueRequestInFlight}
-      @click=${() => (this.showQueueConfirm = true)}
+      @click=${() => void this.handleQueue()}
     >
       ${translateText("host_modal.queue")}
-      <plutonium-icon .size=${12}></plutonium-icon>
-      <span class="tabular-nums">${this.queuePriceHard}</span>
     </button>`;
   }
 
   private async handleQueue() {
-    const price = this.queuePriceHard;
-    if (this.queueRequestInFlight || price === null || !this.lobbyId) return;
+    if (this.queueRequestInFlight || !this.lobbyId) return;
     this.queueRequestInFlight = true;
     const result = await queueLobby(this.lobbyId);
     this.queueRequestInFlight = false;
     if (result.ok) {
       this.queued = true;
-      return;
-    }
-    if (result.error === "insufficient_balance") {
-      this.insufficientInfo = {
-        currency: translateText("cosmetics.hard"),
-        shortfall: Math.max(1, price - this.hardBalance),
-        item: translateText("host_modal.queue_item"),
-        canTopUp: true,
-      };
       return;
     }
     showToast(translateText("host_modal.queue_failed"), "red", 3000);
@@ -386,10 +354,6 @@ export class HostLobbyModal extends BaseModal {
       isPublic === this.publiclyListed ||
       !this.lobbyId
     ) {
-      return;
-    }
-    if (isPublic && !this.canListPublicly) {
-      this.showSubscriptionRequired = true;
       return;
     }
     if (isPublic) {
@@ -766,42 +730,6 @@ export class HostLobbyModal extends BaseModal {
               }}
             ></list-lobby-dialog>`
           : ""}
-        ${this.showQueueConfirm && this.queuePriceHard !== null
-          ? html`<confirm-dialog
-              .heading=${translateText("host_modal.queue_confirm_title")}
-              .message=${translateText("host_modal.queue_confirm_body", {
-                price: this.queuePriceHard,
-              })}
-              variant="warning"
-              .confirmText=${translateText("host_modal.queue_confirm")}
-              @cancel=${() => (this.showQueueConfirm = false)}
-              @confirm=${() => {
-                this.showQueueConfirm = false;
-                void this.handleQueue();
-              }}
-            ></confirm-dialog>`
-          : ""}
-        <insufficient-currency-dialog
-          .info=${this.insufficientInfo}
-          @close=${() => (this.insufficientInfo = null)}
-        ></insufficient-currency-dialog>
-        ${this.showSubscriptionRequired
-          ? html`<confirm-dialog
-              .heading=${translateText(
-                "host_modal.subscription_required_title",
-              )}
-              .message=${translateText("host_modal.subscription_required_body")}
-              variant="warning"
-              .showClose=${true}
-              .buttons=${"confirmOnly"}
-              .confirmText=${translateText("host_modal.view_subscriptions")}
-              @cancel=${() => (this.showSubscriptionRequired = false)}
-              @confirm=${() => {
-                this.showSubscriptionRequired = false;
-                window.location.href = "/#modal=store&tab=subscriptions";
-              }}
-            ></confirm-dialog>`
-          : ""}
       </div>
     `;
   }
@@ -813,18 +741,6 @@ export class HostLobbyModal extends BaseModal {
     // can re-arm it and disconnect the host mid game-start.
     this.leaveLobbyOnClose = true;
     this.startLobbyUpdates();
-    void getUserMe().then((userMe) => {
-      // Dev skips the entitlement gate (matching the server) so the
-      // listing flow is testable locally.
-      this.canListPublicly =
-        ClientEnv.env() === GameEnv.Dev ||
-        (userMe !== false && userMe.player.canCreatePublicLobbies);
-      this.hardBalance =
-        userMe === false ? 0 : (userMe.player.currency?.hard ?? 0);
-    });
-    void fetchCosmetics().then((cosmetics) => {
-      this.queuePriceHard = cosmetics?.lobbyQueue?.priceHard ?? null;
-    });
 
     // Attach mode: the server already minted this successor lobby with us as
     // creator (win-screen "New lobby" flow), so bind to the existing id instead
@@ -1009,12 +925,9 @@ export class HostLobbyModal extends BaseModal {
     this.hostCheatStartingGold = false;
     this.hostCheatStartingGoldValue = undefined;
     this.publiclyListed = false;
-    this.showSubscriptionRequired = false;
     this.showListLobbyDialog = false;
     this.queued = false;
     this.queueRequestInFlight = false;
-    this.showQueueConfirm = false;
-    this.insufficientInfo = null;
     this.autoStartAt = null;
   }
 
@@ -1483,8 +1396,8 @@ export class HostLobbyModal extends BaseModal {
     this.putGameConfig();
   };
 
-  // Server-authoritative: it re-verifies the subscription and enforces the
-  // listing limits, so a failed request reverts the toggle.
+  // Server-authoritative: it enforces the listing limits, so a failed request
+  // reverts the toggle.
   private async handlePublicListingToggle(
     checked: boolean,
     options?: ListLobbyOptions,
@@ -1503,9 +1416,7 @@ export class HostLobbyModal extends BaseModal {
 
   private showListingError(serverError?: string) {
     let key = "private_lobby.listing_failed";
-    if (serverError === "subscription_required") {
-      key = "private_lobby.listing_requires_subscription";
-    } else if (serverError === "listing_limit_reached") {
+    if (serverError === "listing_limit_reached") {
       key = "private_lobby.listing_limit_reached";
     } else if (serverError === "listing_whitelist_enabled") {
       key = "private_lobby.listing_whitelist_enabled";

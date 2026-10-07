@@ -1,12 +1,5 @@
-import {
-  isGrantedSubscription,
-  UserMeResponse,
-} from "@openfront/shared/ApiSchemas";
-import {
-  CosmeticPack,
-  Cosmetics,
-  Product,
-} from "@openfront/shared/CosmeticSchemas";
+import { UserMeResponse } from "@openfront/shared/ApiSchemas";
+import { CosmeticPack, Cosmetics } from "@openfront/shared/CosmeticSchemas";
 import type { PropertyValues, TemplateResult } from "lit";
 import { html } from "lit";
 import { customElement, state } from "lit/decorators.js";
@@ -16,9 +9,7 @@ import { cosmeticSelectionLabel } from "./components/CosmeticPresentation";
 import { isPreviewableCosmetic } from "./components/CosmeticPreviewBubble";
 import "./components/CosmeticPreviewModal";
 import "./components/CurrencyDisplay";
-import "./components/CustomCurrencyCard";
 import "./components/EffectsGrid";
-import type { InlineCheckout } from "./components/InlineCheckout";
 import "./components/NotLoggedInWarning";
 import "./components/PackContentsDialog";
 import { ProgressiveList } from "./components/ProgressiveList";
@@ -35,10 +26,6 @@ import {
   resolveCosmetics,
   ResolvedCosmetic,
 } from "./Cosmetics";
-import {
-  priceStringToCents,
-  reportPendingSteamAuthorizations,
-} from "./Payments";
 import { lastUserMeResponse } from "./UserMeBroadcast";
 import { translateText } from "./Utils";
 
@@ -46,8 +33,6 @@ type StoreTab =
   | "cosmetics"
   | "bundles"
   | "effects"
-  | "packs"
-  | "subscriptions"
   | "tribes";
 
 const COSMETICS_SUB_TABS = ["patterns", "flags", "crowns"] as const;
@@ -55,7 +40,6 @@ type CosmeticsSubTab = (typeof COSMETICS_SUB_TABS)[number];
 
 interface StoreBrowserOptions {
   emptyTranslationKey: string;
-  userHasSubscription?: boolean;
   trailingContent?: TemplateResult;
   gridClass?: string;
   cardClass?: string;
@@ -92,8 +76,6 @@ export class StoreModal extends BaseModal {
     }
     return {
       tabs: [
-        { key: "packs", label: translateText("store.packs") },
-        { key: "subscriptions", label: translateText("store.subscriptions") },
         { key: "bundles", label: translateText("store.bundles") },
         { key: "cosmetics", label: translateText("store.cosmetics") },
         { key: "effects", label: translateText("store.effects") },
@@ -233,11 +215,6 @@ export class StoreModal extends BaseModal {
         .filter((resolved) => resolved.type === "effect")
         .map((resolved) => [resolved]);
     }
-    if (tab === "packs") {
-      return this.resolvedPurchasables()
-        .filter((resolved) => resolved.type === "pack")
-        .map((resolved) => [resolved]);
-    }
     if (tab === "bundles") {
       // Owned and partially owned bundles stay listed (as a status, not a
       // buy button) so the player can see why one isn't for sale to them.
@@ -251,20 +228,6 @@ export class StoreModal extends BaseModal {
             resolved.type === "cosmeticPack" &&
             (resolved.relationship !== "blocked" ||
               this.ownedPackItemNames(resolved).length > 0),
-        )
-        .map((resolved) => [resolved]);
-    }
-    if (tab === "subscriptions") {
-      return resolveCosmetics(
-        this.cosmetics,
-        this.userMeResponse,
-        this.affiliateCode,
-      )
-        .filter(
-          (resolved) =>
-            resolved.type === "subscription" &&
-            (resolved.relationship === "purchasable" ||
-              resolved.relationship === "owned"),
         )
         .map((resolved) => [resolved]);
     }
@@ -341,7 +304,6 @@ export class StoreModal extends BaseModal {
 
   private renderCardAction(
     active: ResolvedCosmetic,
-    userHasSubscription: boolean,
   ): TemplateResult {
     if (active.type === "subscription" && active.relationship === "owned") {
       return this.renderStatus(translateText("store.subscribed"));
@@ -359,18 +321,17 @@ export class StoreModal extends BaseModal {
         );
       }
     }
-    return this.renderPurchaseAction(active, userHasSubscription);
+    return this.renderPurchaseAction(active);
   }
 
   private renderCosmeticCards(
     groups: readonly (readonly ResolvedCosmetic[])[] = this.visibleGroups,
-    userHasSubscription = false,
     cardClass = "block h-full min-w-0",
   ): TemplateResult {
     return html`${groups.map((group) => {
       const focused = group.find((item) => item.key === this.inspected?.key);
       const active = focused ?? group[0];
-      const action = this.renderCardAction(active, userHasSubscription);
+      const action = this.renderCardAction(active);
       return html`<cosmetic-card
         data-store-product
         data-cosmetic-key=${group[0].key}
@@ -393,63 +354,27 @@ export class StoreModal extends BaseModal {
 
   private renderPurchaseAction(
     resolved: ResolvedCosmetic,
-    userHasSubscription: boolean,
   ): TemplateResult {
     const priced = resolved.cosmetic as {
       name?: string;
-      product?: Product | null;
       priceHard?: number;
       priceSoft?: number;
       rarity?: string;
     } | null;
     const isPurchasable = resolved.relationship === "purchasable";
-    // Only packs and subscriptions still check out in USD; cosmetics are
-    // currency-only (their catalog product is always null now, but a cached
-    // cosmetics.json may still carry one — never render a dollar button).
-    const product =
-      isPurchasable &&
-      (resolved.type === "pack" || resolved.type === "subscription")
-        ? (priced?.product ?? null)
-        : null;
+    // Purchases use only the game's earned currencies. Ignore legacy cash
+    // prices that may still be present in a cached catalog.
     const priceHard = isPurchasable ? priced?.priceHard : undefined;
     const priceSoft = isPurchasable ? priced?.priceSoft : undefined;
     const purchase = (method: "dollar" | "hard" | "soft") =>
       purchaseCosmetic(resolved, method);
-    // Currency packs check out inline (wallet button / in-page card form)
-    // when the display price parses; anything else — including subscriptions,
-    // which are recurring and not a PaymentIntent — keeps the redirect flow,
-    // which is also what an unparseable price degrades to.
-    const amountCents =
-      resolved.type === "pack" && product !== null && priced?.name !== undefined
-        ? priceStringToCents(product.price)
-        : null;
-    const inlineCheckout =
-      amountCents !== null
-        ? {
-            request: {
-              kind: "currency_pack" as const,
-              packName: priced!.name!,
-            },
-            amountCents,
-            successMessageKey: "store.currency_pack_purchase_success",
-          }
-        : null;
     // Reserved currency lines are assigned per visual row by
     // alignPurchaseRows() once the grid has laid out.
     return html`<purchase-button
-      .product=${product}
-      .inlineCheckout=${inlineCheckout}
       .priceHard=${priceHard ?? null}
       .priceSoft=${priceSoft ?? null}
       .rarity=${priced?.rarity ?? "common"}
       .itemName=${cosmeticSelectionLabel(resolved)}
-      .dollarLabelKey=${resolved.type === "subscription" && userHasSubscription
-        ? "store.switch_button"
-        : ""}
-      .priceSuffix=${resolved.type === "subscription"
-        ? translateText("store.price_per_month")
-        : ""}
-      .onPurchaseDollar=${product ? () => purchase("dollar") : undefined}
       .onPurchaseHard=${priceHard !== undefined
         ? () => purchase("hard")
         : undefined}
@@ -488,7 +413,6 @@ export class StoreModal extends BaseModal {
             </div>`
         : this.renderCosmeticCards(
             page.items,
-            options.userHasSubscription,
             options.cardClass,
           );
     return this.renderBrowserLayout(
@@ -548,24 +472,6 @@ export class StoreModal extends BaseModal {
     ></effects-grid>`;
   }
 
-  private renderPackGrid(): TemplateResult {
-    // The custom-amount card is always purchasable (priced inline server-side,
-    // no catalog entry), and follows the fixed packs at the end of the grid.
-    // On BOTH rails: the Steam rail sells custom amounts since OPE-337, so
-    // there is no longer a rail on which this card is a dead button.
-    return this.renderBrowser(this.visibleGroups, {
-      emptyTranslationKey: "store.no_packs",
-      trailingContent: html`<custom-currency-card
-        class="block w-[calc(50%-0.5rem)] max-w-48 shrink-0 sm:w-48"
-      ></custom-currency-card>`,
-      gridClass:
-        "flex flex-wrap items-stretch justify-center content-start gap-4 p-4 sm:p-8",
-      cardClass: "block w-[calc(50%-0.5rem)] max-w-48 shrink-0 sm:w-48",
-      emptyClass:
-        "w-full py-8 text-center text-sm font-bold uppercase tracking-wider text-white/40",
-    });
-  }
-
   private renderBundleGrid(): TemplateResult {
     return html`${this.renderBrowser(this.visibleGroups, {
       emptyTranslationKey: "store.no_bundles",
@@ -575,31 +481,10 @@ export class StoreModal extends BaseModal {
         // Yield to the preview; the dialog comes back when it closes.
         html`<pack-contents-dialog
           .pack=${this.openedPack}
-          .actionContent=${this.renderCardAction(this.openedPack, false)}
+          .actionContent=${this.renderCardAction(this.openedPack)}
           @close=${() => this.closePack()}
         ></pack-contents-dialog>`
       : ""}`;
-  }
-
-  private renderSubscriptionGrid(): TemplateResult {
-    // Drives the "Switch" label on the other tiers' buy buttons. A granted
-    // player is deliberately NOT counted (OPE-440): they have nothing to
-    // switch from — nobody is billing them — so every tier, theirs included,
-    // is a first purchase and reads as a plain price.
-    const sub =
-      this.userMeResponse === false
-        ? null
-        : this.userMeResponse.player.subscription;
-    const userHasSubscription = sub !== null && !isGrantedSubscription(sub);
-    return this.renderBrowser(this.visibleGroups, {
-      emptyTranslationKey: "store.no_subscriptions",
-      userHasSubscription,
-      gridClass:
-        "flex flex-wrap items-stretch justify-center content-start gap-4 p-4 sm:p-8",
-      cardClass: "block w-[calc(50%-0.5rem)] max-w-48 shrink-0 sm:w-48",
-      emptyClass:
-        "w-full py-8 text-center text-sm font-bold uppercase tracking-wider text-white/40",
-    });
   }
 
   protected renderHeaderSlot() {
@@ -626,13 +511,10 @@ export class StoreModal extends BaseModal {
         return this.renderBundleGrid();
       case "effects":
         return this.renderEffectGrid();
-      case "subscriptions":
-        return this.renderSubscriptionGrid();
       case "tribes":
         return this.renderTribeGrid();
-      case "packs":
       default:
-        return this.renderPackGrid();
+        return this.renderCosmeticsPanel();
     }
   }
 
@@ -652,12 +534,6 @@ export class StoreModal extends BaseModal {
   }
 
   protected async onOpen(args?: Record<string, unknown>) {
-    // Drain any Steam overlay approval parked before this UI existed. The
-    // main process's "something arrived" nudge is contentless, so one that
-    // fired with no window listening is heard by nobody and sits parked until
-    // something drains it -- which makes this required on every open, not an
-    // optimisation.
-    void reportPendingSteamAuthorizations();
     const affiliate =
       typeof args?.affiliateCode === "string" ? args.affiliateCode : null;
     this.affiliateCode = affiliate;
@@ -667,14 +543,6 @@ export class StoreModal extends BaseModal {
   }
 
   protected onClose(): void {
-    // The store hides via CSS (inline modal), so the tiles never disconnect
-    // and an open card-payment modal — portaled to <body> — would float over
-    // the play page after Escape closes the store. Close it explicitly.
-    for (const inline of this.querySelectorAll<InlineCheckout>(
-      "inline-checkout",
-    )) {
-      inline.closeCardModal();
-    }
     this.affiliateCode = null;
     this.openedPack = null;
     this.previewingCosmetic = null;

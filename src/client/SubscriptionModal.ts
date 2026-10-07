@@ -12,7 +12,7 @@ import { translateText } from "./Utils";
  * Standalone subscription management, opened from the nav profile menu
  * (`#modal=subscription`). The menu only offers it to subscribers, but the
  * modal is reachable by URL, so it also handles the no-subscription case by
- * pointing at the store's subscriptions tab.
+ * showing the free-play perks.
  */
 @customElement("subscription-modal")
 export class SubscriptionModal extends ProfileMenuModal {
@@ -49,15 +49,6 @@ export class SubscriptionModal extends ProfileMenuModal {
             <div class="w-full text-left rounded-lg bg-white/5 px-4 py-3">
               ${renderFreePlayPerks("free_play.free_heading")}
             </div>
-            <o-button
-              variant="primary"
-              size="md"
-              translationKey="subscription_modal.browse"
-              @click=${() => {
-                this.close();
-                window.location.hash = "modal=store&tab=subscriptions";
-              }}
-            ></o-button>
           </div>
         </div>
       `;
