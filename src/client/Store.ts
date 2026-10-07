@@ -464,7 +464,7 @@ export class StoreModal extends BaseModal {
       .focusedKey=${this.inspected?.key ?? null}
       .onPurchaseFocus=${(item: ResolvedCosmetic) => this.activate(item)}
       .renderPurchaseAction=${(item: ResolvedCosmetic) =>
-        this.renderPurchaseAction(item, false)}
+        this.renderPurchaseAction(item)}
       .onVisiblePurchaseItemsChange=${(items: readonly ResolvedCosmetic[]) => {
         this.selectVisible(items.map((item) => [item]));
         this.requestUpdate();

@@ -87,6 +87,10 @@ export function getLocalSelectedSkin(): { name: string; url: string } | null {
 
 export type PaymentMethod = "dollar" | "hard" | "soft";
 
+function isRealMoneyPurchase(method: PaymentMethod, cosmeticType: string): boolean {
+  return method === "dollar" || cosmeticType === "subscription";
+}
+
 /** Returned by {@link purchaseCosmetic} when the player can't afford an item. */
 export interface InsufficientCurrency {
   /** Display name of the currency, e.g. "Plutonium". */
@@ -384,7 +388,7 @@ export async function purchaseCosmetic(
   // The store no longer sells anything for real money. Keep this guard at the
   // purchase boundary as well as hiding the old checkout UI, so stale catalog
   // data or an older client cannot start a Stripe or Steam checkout here.
-  if (method === "dollar" || resolved.type === "subscription") {
+  if (isRealMoneyPurchase(method, resolved.type)) {
     await showInGameAlert(translateText("store.checkout_failed"));
     return;
   }
