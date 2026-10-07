@@ -38,7 +38,6 @@ import {
 import type { JoinLobbyResult } from "./ClientGameRunner";
 import {
   getPlayerCosmeticsRefs,
-  handlePurchaseReturn,
   translateCosmetic,
 } from "./Cosmetics";
 import { updateCrazyGamesNavButton } from "./CrazyGamesAccountButton";
@@ -433,7 +432,6 @@ class Client {
     // Profile-menu modals: popup style, so no pageId.
     modalRouter.register("account-settings", { tag: "account-settings-modal" });
     modalRouter.register("change-username", { tag: "change-username-modal" });
-    modalRouter.register("subscription", { tag: "subscription-modal" });
     modalRouter.register("stats", {
       tag: "game-stats-modal",
       pageId: "page-stats",
@@ -792,7 +790,7 @@ class Client {
         }
 
         // Popups below only on a clean homepage load, never over a deep link
-        // (join URL, #modal=..., #purchase-completed, ...) and never over a
+        // (join URL, #modal=..., ...) and never over a
         // lobby the player has already committed to. The lobby guard matters
         // because a /users/@me landing between the click and the handshake
         // still sees a pristine URL — the join only rewrites it once
@@ -1219,21 +1217,6 @@ class Client {
     // run ahead of userAuth()/getUserMe() rather than here.
 
     // Handle different hash sections
-    if (decodedHash.startsWith("#purchase-completed")) {
-      handlePurchaseReturn(params, {
-        strip,
-        alertAndStrip,
-        alert: (message: string) => showInGameAlert(message),
-        openTokenLogin: (token) =>
-          whenModalLoaded("token-login", () =>
-            this.tokenLoginModal.openWithToken(token),
-          ),
-        refreshStore: () => this.refreshStore(),
-        reload: () => window.location.reload(),
-      });
-      return;
-    }
-
     if (decodedHash.startsWith("#token-login")) {
       const token = params.get("token-login");
 
@@ -1716,7 +1699,6 @@ class Client {
         "clan-modal",
         "account-settings-modal",
         "change-username-modal",
-        "subscription-modal",
         "lang-selector",
         "homepage-promos",
       ].forEach((tag) => {

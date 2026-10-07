@@ -196,12 +196,6 @@ export class NavAccountMenu extends LitElement {
 
     const player =
       this.userMeResponse === false ? null : this.userMeResponse.player;
-    // A past_due subscriber still needs the panel: it is where they reach
-    // the billing portal to fix the failed payment.
-    const subscribed =
-      (player?.subscription !== undefined && player?.subscription !== null) ||
-      (player?.pastDueSubscription !== undefined &&
-        player?.pastDueSubscription !== null);
     const publicId = player?.publicId ?? "";
 
     const items: MenuItem[] = [];
@@ -239,15 +233,6 @@ export class NavAccountMenu extends LitElement {
         onSelect: () => this.openModal("change-username"),
       },
     );
-
-    if (subscribed) {
-      items.push({
-        key: "subscription",
-        labelKey: "nav_account_menu.change_subscription",
-        icon: iconCard,
-        onSelect: () => this.openModal("subscription"),
-      });
-    }
 
     // CrazyGames owns its own sessions: signing out happens on their site, and
     // our /auth/logout wouldn't end theirs. On Steam the session comes from the
@@ -569,21 +554,6 @@ const iconTag = html`<svg
     d="M20.59 13.41 13.42 20.6a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82Z"
   />
   <line x1="7" y1="7" x2="7.01" y2="7" />
-</svg>`;
-
-const iconCard = html`<svg
-  xmlns="http://www.w3.org/2000/svg"
-  viewBox="0 0 24 24"
-  fill="none"
-  stroke="currentColor"
-  stroke-width="1.8"
-  stroke-linecap="round"
-  stroke-linejoin="round"
-  class="w-full h-full"
-  aria-hidden="true"
->
-  <rect x="2" y="5" width="20" height="14" rx="2" />
-  <line x1="2" y1="10" x2="22" y2="10" />
 </svg>`;
 
 const iconLogOut = html`<svg

@@ -1,7 +1,6 @@
 import {
   isGrantedSubscription,
   UserMeResponse,
-  UserSubscription,
 } from "@openfront/shared/ApiSchemas";
 import { assetUrl } from "@openfront/shared/AssetUrls";
 import {
@@ -26,23 +25,13 @@ import {
   PlayerPattern,
 } from "@openfront/shared/WireSchemas";
 import {
-  changeSubscriptionTier,
   getApiBase,
   getUserMe,
   invalidateUserMe,
-  openSubscriptionPortal,
   purchaseCosmeticPack,
   purchaseWithCurrency,
 } from "./Api";
-import { isDesktopShell } from "./DesktopShell";
-import { showInGameAlert, showInGameConfirm } from "./InGameModal";
-import {
-  classifyPurchaseReturn,
-  paymentsProvider,
-  purchaseOutcomeMessage,
-  startPurchase,
-} from "./Payments";
-import { STEAM_TIER_CHANGE_IN_APP } from "./SubscriptionPolicy";
+import { showInGameAlert } from "./InGameModal";
 import { UserSettings } from "./UserSettings";
 import { translateText } from "./Utils";
 
@@ -85,11 +74,7 @@ export function getLocalSelectedSkin(): { name: string; url: string } | null {
   return { name: skin.name, url: skin.url };
 }
 
-export type PaymentMethod = "dollar" | "hard" | "soft";
-
-function isRealMoneyPurchase(method: PaymentMethod, cosmeticType: string): boolean {
-  return method === "dollar" || cosmeticType === "subscription";
-}
+export type PaymentMethod = "hard" | "soft";
 
 /** Returned by {@link purchaseCosmetic} when the player can't afford an item. */
 export interface InsufficientCurrency {
@@ -105,123 +90,6 @@ export interface InsufficientCurrency {
 
 /** Outcome of a purchase: unaffordable details, or void on success/redirect. */
 export type PurchaseResult = InsufficientCurrency | void;
-
-export interface CosmeticPurchaseReturnActions {
-  strip(): void;
-  alertAndStrip(message: string): void;
-  openTokenLogin(token: string): void;
-  refreshStore(): void;
-}
-
-export function completeCosmeticPurchaseReturn(
-  cosmeticName: string,
-  loginToken: string | null,
-  actions: CosmeticPurchaseReturnActions,
-): void {
-  if (loginToken) {
-    actions.strip();
-    actions.openTokenLogin(loginToken);
-    return;
-  }
-  actions.alertAndStrip(
-    translateText("store.purchase_success", { name: cosmeticName }),
-  );
-  actions.refreshStore();
-}
-
-export interface PurchaseReturnActions extends CosmeticPurchaseReturnActions {
-  reload(): void;
-  /**
-   * Show a dialog and RESOLVE WHEN IT IS DISMISSED, unlike `alertAndStrip`
-   * which fires and forgets. Needed only where something must happen after
-   * the player has actually read the message -- see the reload below.
-   */
-  alert(message: string): Promise<unknown>;
-}
-
-/**
- * Handles the #purchase-completed landing hash the payment rails send players
- * back to.
- *
- * `status` has THREE values, not two. `pending` is the one that used to fall
- * into the failure branch and it means the opposite: the order is durable and
- * something else -- a capture still in flight, the server-side sweeper -- owns
- * settling it. Telling a paying player their purchase failed there is the
- * single worst thing this function can do, so pending is never reported as a
- * failure and never given a client-side deadline of its own.
- *
- * `type` is the checkout's `kind`, except that a subscription arrives as
- * `subscription_tier`. `provider`, `orderId`, `pack` and `tier` also ride
- * along; none of them changes what is shown.
- */
-export function handlePurchaseReturn(
-  params: URLSearchParams,
-  actions: PurchaseReturnActions,
-): void {
-  const status = classifyPurchaseReturn(params.get("status"));
-
-  if (status === "failed") {
-    actions.alertAndStrip(translateText("store.purchase_failed"));
-    return;
-  }
-
-  if (status === "pending") {
-    // The credit lands seconds later; drop the cached profile so the balance
-    // is re-read rather than served stale, and say so without claiming the
-    // purchase either succeeded or failed.
-    invalidateUserMe();
-    actions.alertAndStrip(translateText("store.purchase_pending"));
-    actions.refreshStore();
-    return;
-  }
-
-  const type = params.get("type");
-  if (type === "currency_pack") {
-    actions.alertAndStrip(
-      translateText("store.currency_pack_purchase_success"),
-    );
-    return;
-  }
-
-  if (type === "custom_currency") {
-    // Plutonium is credited asynchronously by the rail's webhook; the balance
-    // refreshes from /users/@me on the next load.
-    actions.alertAndStrip(
-      translateText("store.custom_currency_purchase_success"),
-    );
-    return;
-  }
-
-  if (type === "subscription_tier") {
-    actions.strip();
-    invalidateUserMe();
-    // Reload only once the dialog is DISMISSED, matching the blocking alert
-    // this replaced. Reloading underneath an open dialog throws the message
-    // away before the player has read it.
-    void actions
-      .alert(translateText("store.subscription_purchase_success"))
-      .then(() => actions.reload());
-    return;
-  }
-
-  const cosmeticName = params.get("cosmetic");
-  if (!cosmeticName) {
-    // A generic error rather than "purchase failed": the purchase very likely
-    // succeeded and it is our own landing URL that is malformed, so claiming
-    // failure would be the wrong end of the same mistake `pending` fixes.
-    // Deliberately does NOT strip -- there is nothing here we can act on, and
-    // the unstripped hash keeps the evidence for a bug report.
-    void actions.alert(translateText("common.error_generic"));
-    console.error("purchase-completed but no cosmetic name");
-    return;
-  }
-
-  completeCosmeticPurchaseReturn(
-    cosmeticName,
-    params.get("login-token"),
-    actions,
-  );
-}
 
 /**
  * Re-read the profile and tell the app about it.
@@ -271,323 +139,22 @@ function debtMessage(debt: number): string {
   return translateText("store.pack_debt", { debt: String(debt) });
 }
 
-/**
- * Whole days left on a granted subscription, or null when there is no end date
- * to count to.
- *
- * A Steam ownership grant is a fixed free month, so `currentPeriodEnd` is set
- * and the number is real. An admin comp is open-ended (`currentPeriodEnd`
- * null) and there is nothing to count — the caller uses the no-days copy
- * rather than inventing a figure. A date already in the past returns null for
- * the same reason: "0 days" reads as a bug, and a row the sweeper has not got
- * to yet is not worth quoting.
- *
- * Rounded UP, so the figure never claims they forfeit LESS than they do — the
- * safe side for a warning about something irreversible. It also gets the case
- * that would look most like a bug right: two hours into a 30-day grant, floor
- * would say "29 days".
- */
-function grantedDaysRemaining(sub: UserSubscription): number | null {
-  const end = sub.currentPeriodEnd;
-  if (!end) return null;
-  const ms = end.getTime() - Date.now();
-  if (!Number.isFinite(ms) || ms <= 0) return null;
-  return Math.ceil(ms / 86_400_000);
-}
-
-/**
- * A granted player starting a PAID subscription — any tier, including the one
- * their grant already gives them.
- *
- * The confirm is not the tier-change copy. That copy promises Stripe proration
- * ("charged the prorated difference", "credit for the unused portion"), and
- * none of it is true here: infra expires every granted row in the same
- * transaction as the paid insert (`expireGrantsForPaidReplacement`,
- * SteamAgreements.ts, confirmed 12 Sept 2026), so the paid period starts at
- * settle and the unused free days are simply gone — no credit, no extension,
- * no stacking. The string says so, and names the days when we know them,
- * because "not carried over" badly understates 28 of them.
- *
- * The purchase itself is the ordinary first-purchase flow: same startPurchase,
- * same success string, same profile refresh. Only the confirm differs.
- */
-async function purchaseOverGrant(
-  sub: Subscription,
-  currentSub: UserSubscription,
-): Promise<void> {
-  const targetName = translateCosmetic("subscriptions", sub.name);
-  const days = grantedDaysRemaining(currentSub);
-  // Both keys passed as literals so the en.json sync test can see them.
-  const confirmed = await showInGameConfirm(
-    days === null
-      ? translateText("store.confirm_subscribe_over_grant_no_days", {
-          tier: targetName,
-        })
-      : translateText("store.confirm_subscribe_over_grant", {
-          tier: targetName,
-          days,
-        }),
-    {
-      heading: translateText("store.subscribe_heading"),
-      variant: "warning",
-    },
-  );
-  if (!confirmed) return;
-
-  const outcome = await startPurchase({
-    kind: "subscription_tier",
-    tierName: sub.name,
-  });
-  if (outcome.outcome === "completed") await broadcastFreshUserMe();
-  if (outcome.outcome === "error" && outcome.refetchCatalog) {
-    invalidateCosmetics();
-  }
-  if (outcome.outcome === "error" && outcome.manageBilling) {
-    return promptManageBilling(outcome.message);
-  }
-  const message = purchaseOutcomeMessage(
-    outcome,
-    "store.subscription_purchase_success",
-  );
-  if (message !== null) await showInGameAlert(message);
-}
-
-/**
- * Checkout refused a new subscription because the player's Stripe one failed
- * to renew. /users/@me does not return a past_due subscription, so the
- * account panel's Manage button is gone and this is the only way left to the
- * billing portal, which does admit past_due. The desktop build must not link
- * out to a payment page (see SubscriptionPanel.renderManageOnWeb), so it only
- * says where to go.
- */
-async function promptManageBilling(message: string): Promise<void> {
-  if (isDesktopShell()) {
-    await showInGameAlert(translateText("store.subscription_past_due_desktop"));
-    return;
-  }
-  const confirmed = await showInGameConfirm(message, {
-    variant: "warning",
-    confirmText: translateText("store.manage_billing"),
-  });
-  if (!confirmed) return;
-  const url = await openSubscriptionPortal();
-  if (url === false) {
-    await showInGameAlert(
-      translateText("account_modal.subscription_portal_failed"),
-    );
-    return;
-  }
-  window.open(url, "_blank", "noopener,noreferrer");
-}
-
 export async function purchaseCosmetic(
   resolved: ResolvedCosmetic,
   method: PaymentMethod,
 ): Promise<PurchaseResult> {
   if (!resolved.cosmetic) return;
-  // The store no longer sells anything for real money. Keep this guard at the
-  // purchase boundary as well as hiding the old checkout UI, so stale catalog
-  // data or an older client cannot start a Stripe or Steam checkout here.
-  if (isRealMoneyPurchase(method, resolved.type)) {
-    await showInGameAlert(translateText("store.checkout_failed"));
-    return;
-  }
   const c = resolved.cosmetic;
   const colorPaletteName = resolved.colorPalette?.name;
-
   if (resolved.type === "subscription") {
-    const sub = c as Subscription;
-    const userMe = await getUserMe();
-    const currentSub =
-      userMe === false ? null : (userMe.player.subscription ?? null);
-
-    if (currentSub) {
-      // OPE-440, and BEFORE every branch below it, including the
-      // already-subscribed one. A grant is not a purchase: nobody is being
-      // billed, so there is no agreement to reprice and `change-tier` answers
-      // 400 "Cannot change tier of a granted subscription" for every tier —
-      // which is why a granted player currently cannot pay us at all. Their
-      // tier selection is a FIRST purchase, and /payments/checkout admits
-      // them on both rails (its exclusivity gate filters
-      // `isNotNull(subscriptions.provider)`, so a granted row is never an
-      // incumbent).
-      //
-      // Including the tier they already hold: buying that same tier is the
-      // likeliest conversion of the whole cohort, and `already_subscribed`
-      // would refuse the one click we most want.
-      //
-      // No rail check like the Steam ones below, because a grant HAS no rail:
-      // `provider` is null, so there is no account fact to disagree with the
-      // device, and startPurchase's paymentsProvider() is the only answer
-      // there is — Steam inside the shell, Stripe on the web. Both are
-      // admitted.
-      if (isGrantedSubscription(currentSub)) {
-        return purchaseOverGrant(sub, currentSub);
-      }
-
-      if (currentSub.tier === sub.name) {
-        await showInGameAlert(translateText("store.already_subscribed"));
-        return;
-      }
-
-      // S1 (infra OPE-230, lead decision pending Josh): a Steam subscriber
-      // cannot change tier in-app at launch. The server would refuse the
-      // checkout with a 409 anyway; refusing HERE, before the confirm and
-      // before an order is minted, means no dialog that only ever ends in a
-      // refusal and no stranded PENDING row. Same switch the panel reads.
-      if (currentSub.provider === "steam" && !STEAM_TIER_CHANGE_IN_APP) {
-        await showInGameAlert(
-          translateText("store.tier_change_unavailable_steam"),
-        );
-        return;
-      }
-
-      // Rail vs account. `currentSub.provider` is where the ACCOUNT is
-      // billed; `paymentsProvider()` is what this DEVICE can check out on
-      // (Steam only inside the desktop shell). A Steam-billed subscriber in
-      // a plain browser would otherwise see the Steam confirm and then have
-      // a Stripe checkout minted for them — which the server refuses at
-      // gate 1, leaving a stranded row. A Steam agreement can only be
-      // replaced by another Steam agreement, so say where to do it.
-      if (currentSub.provider === "steam" && paymentsProvider() !== "steam") {
-        await showInGameAlert(
-          translateText("store.tier_change_steam_needs_desktop"),
-        );
-        return;
-      }
-
-      // Direction-aware confirm based on priceMonthly. We don't have the
-      // server's sortOrder client-side — priceMonthly is a good proxy.
-      const currentCosmetic =
-        (await fetchCosmetics())?.subscriptions?.[currentSub.tier] ?? null;
-      const isUpgrade =
-        currentCosmetic !== null
-          ? sub.priceMonthly > currentCosmetic.priceMonthly
-          : true;
-      const targetName = translateCosmetic("subscriptions", sub.name);
-      // The Stripe copy promises proration ("charged the prorated
-      // difference", "credit for the unused portion"). On Steam neither
-      // exists: the new tier is a NEW agreement at full price, starting now,
-      // and the rest of the old month is forfeited. Say that, not the
-      // Stripe thing.
-      const confirmKey =
-        currentSub.provider === "steam"
-          ? "store.confirm_tier_change_steam"
-          : isUpgrade
-            ? "store.confirm_upgrade"
-            : "store.confirm_downgrade";
-      const confirmed = await showInGameConfirm(
-        translateText(confirmKey, { tier: targetName }),
-        {
-          heading: translateText("account_modal.change_tier"),
-          variant: "warning",
-        },
-      );
-      if (!confirmed) return;
-
-      // A Steam subscription cannot be repriced in place: Steam's only
-      // mechanism is a NEW billing agreement, whose approval disables the old
-      // one (infra Phase 9, §4.4 — and the server's change-tier answers 409
-      // requires_approval for a Steam row). So the change IS a fresh checkout
-      // for the target tier, through the same overlay flow as a first
-      // purchase; the server's gate admits a same-rail different-tier
-      // incumbent and expires the old row when the new one settles. Nothing
-      // is cancelled first: a player who dismisses the dialog keeps what
-      // they had.
-      if (currentSub.provider === "steam") {
-        const outcome = await startPurchase({
-          kind: "subscription_tier",
-          tierName: sub.name,
-        });
-        if (outcome.outcome === "completed") await broadcastFreshUserMe();
-        if (outcome.outcome === "error" && outcome.refetchCatalog) {
-          invalidateCosmetics();
-        }
-        const message = purchaseOutcomeMessage(
-          outcome,
-          "store.change_tier_success_steam",
-        );
-        if (message !== null) await showInGameAlert(message);
-        return;
-      }
-
-      const result = await changeSubscriptionTier(sub.name);
-      if (result === "rate_limited") {
-        await showInGameAlert(translateText("store.change_tier_rate_limited"));
-        return;
-      }
-      if (!result) {
-        await showInGameAlert(translateText("store.change_tier_failed"));
-        return;
-      }
-      await showInGameAlert(
-        translateText("store.change_tier_success", { tier: targetName }),
-      );
-      window.location.reload();
-      return;
-    }
+    // This fork has no subscription purchases or tier changes.
+    await showInGameAlert(translateText("store.checkout_failed"));
+    return;
   }
 
   if (resolved.type === "cosmeticPack") {
     return purchasePack(c as CosmeticPack, method);
   }
-
-  if (method === "dollar") {
-    // Currency packs and subscription tiers go through the rail-agnostic
-    // /payments/checkout, which identifies a listing by NAME. Neither may gate
-    // on the Stripe `product` block: it is null for every Steam-only listing,
-    // and gating on it is what made those unbuyable.
-    if (resolved.type === "pack" || resolved.type === "subscription") {
-      const isPack = resolved.type === "pack";
-      const outcome = await startPurchase(
-        isPack
-          ? { kind: "currency_pack", packName: c.name }
-          : { kind: "subscription_tier", tierName: c.name },
-      );
-      if (outcome.outcome === "completed") {
-        // Not just invalidateUserMe(): that clears the cache and nothing more.
-        // On the overlay path the page never navigates, so an open StoreModal
-        // keeps the `userMeResponse` it was rendered from and shows a stale
-        // balance and subscription after a purchase that has already settled.
-        // Fetching and broadcasting is what actually updates it -- the same
-        // shape TribesPanel uses after a hard-currency purchase.
-        await broadcastFreshUserMe();
-      }
-      // The catalog this store rendered from named something the rail no
-      // longer sells; drop it so the next open refetches.
-      if (outcome.outcome === "error" && outcome.refetchCatalog) {
-        invalidateCosmetics();
-      }
-      if (outcome.outcome === "error" && outcome.manageBilling) {
-        return promptManageBilling(outcome.message);
-      }
-      const message = purchaseOutcomeMessage(
-        outcome,
-        isPack
-          ? "store.currency_pack_purchase_success"
-          : "store.subscription_purchase_success",
-      );
-      if (message !== null) await showInGameAlert(message);
-      return;
-    }
-
-    // Real money only buys plutonium (packs above) or a subscription;
-    // dollar-priced cosmetics/flares and their legacy create-checkout-session
-    // endpoint are gone. Only a stale cached cosmetics.json that still
-    // carries a product block can land here.
-    await showInGameAlert(translateText("store.checkout_failed"));
-    return;
-  }
-
-  // Currency purchase (hard or soft) — not valid for subscriptions.
-  if (resolved.type === "subscription") {
-    console.error(
-      "purchaseCosmetic: currency purchase not supported for subscriptions",
-    );
-    return;
-  }
-  // ResolvedCosmetic isn't a discriminated union, so the guard above doesn't
-  // narrow cosmetic's type. Subscriptions are excluded by the runtime check.
   const priced = c as Pattern | Flag | Pack;
   const price =
     method === "hard" ? (priced.priceHard ?? 0) : (priced.priceSoft ?? 0);

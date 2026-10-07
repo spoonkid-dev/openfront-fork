@@ -167,9 +167,6 @@ export class ClientEnv {
       numWorkers: bc.numWorkers,
       turnstileSiteKey: bc.turnstileSiteKey,
       jwtAudience: bc.jwtAudience,
-      // Optional: a deployment without a key (or a desktop shell, which
-      // buys on Steam) omits it, and the inline Stripe flow stays off.
-      stripePublishableKey: bc.stripePublishableKey,
       // Optional: absent keeps client telemetry off (see Telemetry.ts).
       faroCollectorUrl: bc.faroCollectorUrl,
       // Absent on a static page: only a server that renders the page knows
@@ -192,8 +189,9 @@ export class ClientEnv {
   static env(): GameEnv {
     return ClientEnv.get().gameEnv;
   }
-  static stripePublishableKey(): string | undefined {
-    return ClientEnv.get().stripePublishableKey;
+  /** Real-money checkout is disabled in this fork. */
+  static stripePublishableKey(): undefined {
+    return undefined;
   }
   static faroCollectorUrl(): string | undefined {
     return ClientEnv.get().faroCollectorUrl;
@@ -667,10 +665,6 @@ export interface ClientEnvValues {
   numWorkers?: number;
   turnstileSiteKey: string;
   jwtAudience: string;
-  // Optional: absent when the deployment carries no Stripe key (dev, desktop
-  // shells). Environment-scoped like turnstileSiteKey, so a static page
-  // carries it too.
-  stripePublishableKey?: string;
   // Optional: absent keeps client telemetry off (Telemetry.ts).
   faroCollectorUrl?: string;
   // "" on a static page, which no server rendered.

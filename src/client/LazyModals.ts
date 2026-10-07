@@ -31,7 +31,6 @@ const modules: Record<string, () => Promise<unknown>> = {
   "steam-handoff-modal": () => import("./SteamHandoffModal"),
   "steam-link-modal": () => import("./SteamLinkModal"),
   "store-modal": () => import("./Store"),
-  "subscription-modal": () => import("./SubscriptionModal"),
   "token-login": () => import("./TokenLoginModal"),
   "troubleshooting-modal": () => import("./TroubleshootingModal"),
   "user-setting": () => import("./UserSettingModal"),

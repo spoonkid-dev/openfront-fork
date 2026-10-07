@@ -13,7 +13,6 @@ import { loadStripe } from "@stripe/stripe-js/pure";
 import { ClientEnv } from "./ClientEnv";
 import {
   createInlinePaymentIntent,
-  paymentsProvider,
   type PurchaseRequest,
 } from "./Payments";
 import { translateText } from "./Utils";
@@ -62,12 +61,8 @@ export function stripeKeyMatchesEnv(key: string, env: GameEnv): boolean {
  * environment's Stripe mode.
  */
 export function stripeInlineAvailable(): boolean {
-  const key = stripePublishableKey();
-  return (
-    paymentsProvider() === "stripe" &&
-    key !== null &&
-    stripeKeyMatchesEnv(key, ClientEnv.env())
-  );
+  // Free-to-play builds never expose card, wallet, or inline Stripe checkout.
+  return false;
 }
 
 // One Stripe.js instance per page. A failed load resets the slot so a later

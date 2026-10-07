@@ -302,6 +302,11 @@ function error(message: string, refetchCatalog = false): PurchaseError {
   return { outcome: "error", message, refetchCatalog };
 }
 
+/** This fork does not offer real-money purchases. */
+function realMoneyPurchasesEnabled(): boolean {
+  return false;
+}
+
 function checkoutError(
   result: Extract<PaymentsCheckoutResult, { ok: false }>,
 ): PurchaseError {
@@ -386,6 +391,12 @@ export async function startPurchase(
   request: PurchaseRequest,
   options: StartPurchaseOptions = {},
 ): Promise<PurchaseOutcome> {
+  // This fork is free to play: retain the old result handling for any stale
+  // client state, but never create a Stripe or Steam order from this client.
+  if (!realMoneyPurchasesEnabled()) {
+    return error(translateText("store.checkout_failed"));
+  }
+
   const navigate = options.navigate ?? defaultNavigate;
   const provider = paymentsProvider();
 
@@ -538,6 +549,14 @@ export type InlineIntentResult =
 export async function createInlinePaymentIntent(
   request: PurchaseRequest,
 ): Promise<InlineIntentResult> {
+  // Inline Stripe checkout is disabled alongside redirect and Steam checkout.
+  if (!realMoneyPurchasesEnabled()) {
+    return {
+      kind: "error",
+      error: error(translateText("store.checkout_failed")),
+    };
+  }
+
   const result = await createPaymentsCheckout({
     provider: "stripe",
     handoffs: ["redirect", "client_secret"],

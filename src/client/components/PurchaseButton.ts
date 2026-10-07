@@ -3,7 +3,6 @@ import { customElement, property, state } from "lit/decorators.js";
 import type { InsufficientCurrency, PurchaseResult } from "../Cosmetics";
 import { showInGameAlert } from "../InGameModal";
 import { translateText } from "../Utils";
-import type { InlineCheckoutConfig } from "./InlineCheckout";
 import "./CapIcon";
 import "./ConfirmDialog";
 import "./InsufficientCurrencyDialog";
@@ -222,17 +221,6 @@ export class PurchaseButton extends LitElement {
   /** Display name of the item, used in the currency confirmation dialog. */
   @property({ type: String })
   itemName: string = "";
-
-  // Legacy fields are accepted for compatibility with old cached/custom
-  // currency cards, but no real-money button is rendered.
-  @property({ type: String })
-  dollarPrice: string = "";
-
-  @property({ type: Object })
-  inlineCheckout: InlineCheckoutConfig | null = null;
-
-  @property({ type: Function })
-  onPurchaseDollar?: () => Promise<PurchaseResult>;
 
   @property({ type: Boolean })
   reserveHard = false;

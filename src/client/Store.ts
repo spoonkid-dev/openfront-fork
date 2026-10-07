@@ -366,7 +366,7 @@ export class StoreModal extends BaseModal {
     // prices that may still be present in a cached catalog.
     const priceHard = isPurchasable ? priced?.priceHard : undefined;
     const priceSoft = isPurchasable ? priced?.priceSoft : undefined;
-    const purchase = (method: "dollar" | "hard" | "soft") =>
+    const purchase = (method: "hard" | "soft") =>
       purchaseCosmetic(resolved, method);
     // Reserved currency lines are assigned per visual row by
     // alignPurchaseRows() once the grid has laid out.
